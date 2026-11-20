@@ -1,6 +1,5 @@
 *.ipa
 *.exe
-/ipadecrypt
 .idea
 .fleet
 .vscode
