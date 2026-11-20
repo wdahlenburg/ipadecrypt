@@ -26,6 +26,22 @@ type kbsyncStore struct {
 	blob string
 }
 
+// TestFlightKBSync returns the account-bound FairPlay device information that
+// TestFlight requires when authorizing a build download.
+func (c *Client) TestFlightKBSync(ctx context.Context, dsid uint64) (string, error) {
+	mac, err := macAddress()
+	if err != nil {
+		return "", err
+	}
+
+	_, hardwareID, err := machineIdentity(mac)
+	if err != nil {
+		return "", err
+	}
+
+	return c.generateKBSync(ctx, hardwareID, dsid)
+}
+
 // generateKBSync returns the base64 FairPlay attestation blob the ent/download
 // endpoint requires, producing it with the StoreAgent guest. Mirrors ipatool
 // generateKBSync.

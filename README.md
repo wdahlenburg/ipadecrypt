@@ -41,9 +41,10 @@ the device.
 ## Requirements
 
 ### On your computer
-- Nothing special for everyday decrypting. A jailbroken iPhone reachable over
+- Nothing special for everyday App Store decrypting. A jailbroken iPhone reachable over
   the network (or over USB with `iproxy`) is needed for the one-time mint, and
   again only for the on-device fallback on apps that can't be decrypted offline.
+- TestFlight session import additionally uses the system `sqlite3` command.
 
 ### On the jailbroken iPhone
 | Requirement | Purpose |
@@ -112,6 +113,37 @@ decrypting it on the device. Useful flags:
 ```sh
 ipadecrypt versions <bundle-id|app-store-id|app-store-url>
 ```
+
+### TestFlight apps and versions
+
+Sign in to TestFlight and open it once on the jailbroken iPhone, then run:
+
+```sh
+ipadecrypt testflight apps
+```
+
+If a saved session is missing or expired, `apps` automatically finds the
+signed-in session on the configured device, saves it, and retries the listing.
+Pass `--udid <device-udid>` (`ipadecrypt testflight apps --udid <device-udid>`)
+to use USB instead of the configured network connection. The setup reads
+TestFlight's on-disk HTTP cache over SSH; it does not use Frida, intercept an
+Install tap, or install a build. Later listings run without the phone until Apple
+expires the saved session. `testflight import-session` remains available for
+an explicit refresh.
+
+List the versions for an app, then decrypt the newest version or choose one by
+its normal version string:
+
+```sh
+ipadecrypt testflight versions <app-id>
+ipadecrypt testflight decrypt <app-id>
+ipadecrypt testflight decrypt <app-id> --version 6.27.0
+```
+
+Build IDs and build numbers are internal and are not part of the command-line
+workflow. If TestFlight has multiple active uploads for the same version,
+ipadecrypt chooses the newest upload. The first download needs the source
+device UDID; pass `--udid` if it was not saved during session discovery.
 
 ## Known issues
 
