@@ -113,6 +113,45 @@ decrypting it on the device. Useful flags:
 ipadecrypt versions <bundle-id|app-store-id|app-store-url>
 ```
 
+### TestFlight apps and versions
+
+Sign in to TestFlight and open it once on the jailbroken iPhone, then run:
+
+```sh
+ipadecrypt testflight apps
+```
+
+Preview a public TestFlight invitation without accepting it, or explicitly
+accept it with `--accept`:
+
+```sh
+ipadecrypt testflight link <link-or-code>
+ipadecrypt testflight link <link-or-code> --accept
+```
+
+If a saved session is missing or expired, `apps` automatically finds the
+signed-in session on the configured device, saves it, and retries the listing.
+Pass `--udid <device-udid>` (`ipadecrypt testflight apps --udid <device-udid>`)
+to use USB instead of the configured network connection. The setup reads
+TestFlight's on-disk HTTP cache over SSH; it does not use Frida, intercept an
+Install tap, or install a build. Later listings run without the phone until Apple
+expires the saved session. `testflight import-session` remains available for
+an explicit refresh.
+
+List the versions for an app, then decrypt the newest version or choose one by
+its normal version string:
+
+```sh
+ipadecrypt testflight versions <app-id>
+ipadecrypt testflight decrypt <app-id>
+ipadecrypt testflight decrypt <app-id> --version 1.0.0
+```
+
+Build IDs and build numbers are internal and are not part of the command-line
+workflow. If TestFlight has multiple active uploads for the same version,
+ipadecrypt chooses the newest upload. The first download needs the source
+device UDID; pass `--udid` if it was not saved during session discovery.
+
 ## Known issues
 
 - Only the supported SINF/SUPF/SUPP license formats decrypt offline; apps shipping a newer, unsupported `SC_Info` format fall back to the on-device path when a device is configured.

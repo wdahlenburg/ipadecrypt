@@ -17,6 +17,8 @@ import (
 	"time"
 
 	apphttp "github.com/londek/ipadecrypt/internal/apphttp"
+	"github.com/londek/ipadecrypt/internal/sap/assets"
+	"github.com/londek/ipadecrypt/internal/sap/machine"
 	"howett.net/plist"
 )
 
@@ -31,10 +33,17 @@ type DownloadOutput struct {
 // No bytes move until CompleteDownload runs, so the caller can look at the
 // ticket and decide whether it's worth fetching.
 type DownloadTicket struct {
-	URL       string
-	Sinfs     []Sinf
-	Metadata  map[string]any
-	AssetInfo map[string]any
+	URL   string
+	Sinfs []Sinf
+	// DPInfo initializes StoreAgent for CDN packages whose transport is
+	// encrypted, including TestFlight build downloads. App Store tickets leave
+	// it empty because those package URLs return ZIP data directly.
+	DPInfo []byte
+	// HardwareID is the identity paired with DPInfo. TestFlight uses its
+	// twenty-byte device identity rather than the App Store's six-byte GUID.
+	HardwareID []byte
+	Metadata   map[string]any
+	AssetInfo  map[string]any
 
 	// validatePlatform is set when the response came from a path that resolves
 	// the iPhone platform, so the package's Info.plist is checked.
@@ -104,10 +113,12 @@ func metaIntSlice(m map[string]any, key string) []int {
 }
 
 type downloadItem struct {
-	URL       string         `plist:"URL,omitempty"`
-	Sinfs     []Sinf         `plist:"sinfs,omitempty"`
-	Metadata  map[string]any `plist:"metadata,omitempty"`
-	AssetInfo map[string]any `plist:"asset-info,omitempty"`
+	URL        string         `plist:"URL,omitempty"`
+	Sinfs      []Sinf         `plist:"sinfs,omitempty"`
+	DPInfo     []byte         `plist:"dpInfo,omitempty"`
+	HardwareID []byte         `plist:"-"`
+	Metadata   map[string]any `plist:"metadata,omitempty"`
+	AssetInfo  map[string]any `plist:"asset-info,omitempty"`
 
 	validatePlatform bool
 }
@@ -550,8 +561,22 @@ func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath s
 		onProgress(ticket.FileSize(), ticket.FileSize())
 	}
 
+	packagePath := tmp
+	decryptedTmp := tmp + ".decrypted"
+
+	if len(ticket.DPInfo) != 0 {
+		if err := decryptStorePackage(ticket.HardwareID, ticket.DPInfo, tmp, decryptedTmp); err != nil {
+			_ = os.Remove(decryptedTmp)
+
+			return DownloadOutput{}, fmt.Errorf("decrypt package transport: %w", err)
+		}
+
+		packagePath = decryptedTmp
+		defer os.Remove(decryptedTmp)
+	}
+
 	if item.validatePlatform {
-		if err := validatePackagePlatform(tmp); err != nil {
+		if err := validatePackagePlatform(packagePath); err != nil {
 			if removeErr := os.Remove(tmp); removeErr != nil {
 				err = errors.Join(err, fmt.Errorf("remove tmp: %w", removeErr))
 			}
@@ -560,7 +585,7 @@ func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath s
 		}
 	}
 
-	if err := applyPatches(tmp, outPath, item, acc); err != nil {
+	if err := applyPatches(packagePath, outPath, item, acc); err != nil {
 		return DownloadOutput{}, err
 	}
 
@@ -569,6 +594,45 @@ func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath s
 	}
 
 	return DownloadOutput{DestinationPath: outPath, Sinfs: item.Sinfs}, nil
+}
+
+func decryptStorePackage(hardwareID, dpInfo []byte, srcPath, dstPath string) (err error) {
+	ctx := context.Background()
+
+	bundle, err := assets.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("load StoreAgent assets: %w", err)
+	}
+
+	agent, err := machine.OpenStoreAgent(ctx, bundle, hardwareID, dpInfo)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, agent.Close())
+	}()
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open encrypted package: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, src.Close())
+	}()
+
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create decrypted package: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, dst.Close())
+	}()
+
+	if _, err := agent.Decrypt(ctx, dst, src); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type platformPackageInfo struct {
@@ -586,6 +650,7 @@ func validatePackagePlatform(path string) error {
 	}
 
 	defer zr.Close()
+	registerAppleZIPDecompressor(&zr.Reader)
 
 	for _, f := range zr.File {
 		if !isTopLevelAppInfoPlist(f.Name) {
@@ -834,6 +899,7 @@ func applyPatches(src, dst string, item downloadItem, acc *Account) (err error) 
 	}
 
 	defer zr.Close()
+	registerAppleZIPDecompressor(&zr.Reader)
 
 	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -916,6 +982,12 @@ func joinCleanupError(err error, message string, cleanupErr error) error {
 // replicateZip copies every entry's compressed bytes and local-header extra
 // verbatim.
 func replicateZip(src *zip.ReadCloser, dst *zip.Writer, sourcePath string) error {
+	if slices.ContainsFunc(src.File, func(file *zip.File) bool {
+		return file.Method == appleLZFSEMethod
+	}) {
+		return replicateAppleZIP(src, dst)
+	}
+
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", sourcePath, err)
@@ -967,6 +1039,45 @@ func replicateZip(src *zip.ReadCloser, dst *zip.Writer, sourcePath string) error
 
 		if _, err := io.Copy(w, srcFile); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// replicateAppleZIP rewrites Apple's method-99 archives instead of copying
+// their private local-header layout. All members are CRC-checked by archive/zip
+// and emitted using standard Store or Deflate compression.
+func replicateAppleZIP(src *zip.ReadCloser, dst *zip.Writer) error {
+	for _, file := range src.File {
+		r, err := file.Open()
+		if err != nil {
+			return err
+		}
+
+		header := file.FileHeader
+		header.Extra = zipExtraWithoutZIP64(header.Extra)
+		if strings.HasSuffix(header.Name, "/") {
+			header.Method = zip.Store
+		} else {
+			header.Method = zip.Deflate
+		}
+
+		w, err := dst.CreateHeader(&header)
+		if err != nil {
+			_ = r.Close()
+
+			return err
+		}
+
+		_, copyErr := io.Copy(w, r)
+		closeErr := r.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+
+		if closeErr != nil {
+			return closeErr
 		}
 	}
 

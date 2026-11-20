@@ -30,6 +30,7 @@ func bootstrapHandler(cmd *cobra.Command, args []string) {
 	if bootstrapReset {
 		cfg.Apple = config.Apple{}
 		cfg.Device = config.Device{Port: 22}
+		cfg.TestFlight = config.TestFlight{}
 
 		if err := cfg.Save(); err != nil {
 			tui.Err("reset config: %v", err)

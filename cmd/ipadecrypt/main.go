@@ -50,6 +50,10 @@ var (
 
 	versionsStorefront   string
 	versionsLogResponses bool
+
+	testFlightUDID       string
+	testFlightVersion    string
+	testFlightLinkAccept bool
 )
 
 func main() {
@@ -104,7 +108,57 @@ func main() {
 	versions.Flags().StringVar(&versionsStorefront, "storefront", "", "override App Store storefront (numeric ID or two-letter country code, e.g. 143441 or US)")
 	versions.Flags().BoolVar(&versionsLogResponses, "log-responses", false, "append each API response as a JSONL record to ~/.ipadecrypt/logs/versions.log")
 
-	root.AddCommand(bootstrap, decrypt, versions)
+	testFlight := &cobra.Command{
+		Use:   "testflight",
+		Short: "Browse and decrypt TestFlight apps",
+	}
+	testFlight.PersistentFlags().StringVar(&testFlightUDID, "udid", "", "source TestFlight device UDID (also selects it for USB session import)")
+	testFlight.AddCommand(&cobra.Command{
+		Use:   "apps",
+		Short: "List TestFlight developers and apps",
+		Long:  "Lists TestFlight developers and apps. If the saved session is missing or expired, finds the signed-in session on the configured jailbroken device and retries automatically.",
+		Args:  cobra.NoArgs,
+		Run:   testFlightAppsHandler,
+	})
+	testFlight.AddCommand(&cobra.Command{
+		Use:   "versions <app-id>",
+		Short: "List available TestFlight versions",
+		Args:  cobra.ExactArgs(1),
+		Run:   testFlightVersionsHandler,
+	})
+	testFlightLink := &cobra.Command{
+		Use:   "link <link-or-code>",
+		Short: "Preview or accept a TestFlight public link",
+		Args:  cobra.ExactArgs(1),
+		Run:   testFlightLinkHandler,
+	}
+	testFlightLink.Flags().BoolVar(&testFlightLinkAccept, "accept", false, "accept the public TestFlight invitation")
+	testFlight.AddCommand(testFlightLink)
+
+	testFlightDecrypt := &cobra.Command{
+		Use:   "decrypt <app-id>",
+		Short: "Download and decrypt a TestFlight version",
+		Args:  cobra.ExactArgs(1),
+		Run:   testFlightDecryptHandler,
+	}
+	testFlightDecrypt.Flags().StringVar(&testFlightVersion, "version", "", "TestFlight version to download (default: newest available)")
+	testFlightDecrypt.Flags().StringVarP(&decryptOutput, "output", "o", "", "output path for the decrypted IPA")
+	testFlightDecrypt.Flags().BoolVar(&decryptNoVerify, "no-verify", false, "skip the post-decrypt Mach-O verification pass")
+	testFlightDecrypt.Flags().BoolVar(&decryptExtraVerify, "extra-verify", false, "also byte-compare every output Mach-O against its source counterpart")
+	testFlightDecrypt.Flags().BoolVar(&decryptSkipAppex, "skip-appex", false, "skip app extensions (*.appex); they stay encrypted in the output IPA")
+	testFlightDecrypt.Flags().BoolVar(&decryptKeepWatch, "keep-watch", false, "keep and decrypt the Watch app instead of removing it")
+	testFlightDecrypt.Flags().BoolVarP(&decryptVerbose, "verbose", "v", false, "print the output path during decryption")
+	testFlight.AddCommand(testFlightDecrypt)
+
+	testFlightImport := &cobra.Command{
+		Use:   "import-session",
+		Short: "Import an authenticated TestFlight session from a jailbroken device",
+		Args:  cobra.NoArgs,
+		Run:   testFlightImportHandler,
+	}
+	testFlight.AddCommand(testFlightImport)
+
+	root.AddCommand(bootstrap, decrypt, versions, testFlight)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
