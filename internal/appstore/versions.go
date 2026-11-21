@@ -88,7 +88,7 @@ func (c *Client) GetVersionMetadata(acc *Account, app App, externalVersionID str
 		return VersionMetadata{}, err
 	}
 
-	ticket := DownloadTicket(item)
+	ticket := item.ticket()
 
 	metadata, err := c.readVersionMetadataFromIPA(item.URL)
 	if err != nil {

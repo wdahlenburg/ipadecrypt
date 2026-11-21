@@ -13,12 +13,14 @@ import (
 
 func TestReplicateZipNormalizesAppleLZFSE(t *testing.T) {
 	payload := bytes.Repeat([]byte("TestFlight package data\n"), 1024)
+
 	compressed, err := lzfse.Compress(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	sourcePath := t.TempDir() + "/apple.zip"
+
 	source, err := os.Create(sourcePath)
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +34,7 @@ func TestReplicateZipNormalizesAppleLZFSE(t *testing.T) {
 		CompressedSize64:   uint64(len(compressed)),
 		UncompressedSize64: uint64(len(payload)),
 	}
+
 	w, err := zw.CreateRaw(header)
 	if err != nil {
 		t.Fatal(err)
@@ -53,9 +56,11 @@ func TestReplicateZipNormalizesAppleLZFSE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	registerAppleZIPDecompressor(&zr.Reader)
 
 	destinationPath := t.TempDir() + "/normalized.zip"
+
 	destination, err := os.Create(destinationPath)
 	if err != nil {
 		t.Fatal(err)

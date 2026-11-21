@@ -2,7 +2,6 @@ package testflight
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -79,15 +78,10 @@ func (c *Client) ResolvePublicLink(ctx context.Context, code string) (PublicLink
 	}
 
 	var response struct {
-		Data  PublicLink      `json:"data"`
-		Error json.RawMessage `json:"error"`
+		Data PublicLink `json:"data"`
 	}
 	if err := c.send(ctx, http.MethodGet, c.publicLinkPath(code), nil, &response); err != nil {
 		return PublicLink{}, err
-	}
-
-	if len(response.Error) != 0 && string(response.Error) != "null" {
-		return PublicLink{}, errors.New("TestFlight could not resolve this public link")
 	}
 
 	link, err := normalizePublicLink(response.Data)
@@ -110,7 +104,7 @@ func (c *Client) AcceptPublicLink(ctx context.Context, code string) error {
 }
 
 func (c *Client) publicLinkPath(code string) string {
-	return "/v3/accounts/" + url.PathEscape(c.accountID) + "/ru/" + url.PathEscape(code)
+	return "/v3/accounts/" + url.PathEscape(c.session.AccountID) + "/ru/" + url.PathEscape(code)
 }
 
 func knownPublicLinkStatus(status string) bool {

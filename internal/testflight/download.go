@@ -20,8 +20,8 @@ const packageHost = "iosapps.itunes.apple.com"
 
 var identityToken = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-type Download struct {
-	Ticket   appstore.DownloadTicket
+type SelectedBuild struct {
+	AppID    int64
 	BundleID string
 	Version  string
 	BuildID  int64
@@ -62,74 +62,74 @@ type sinfEnvelope struct {
 	Sinfs []appstore.Sinf `plist:"sinfs"`
 }
 
-func (c *Client) PrepareDownload(ctx context.Context, appID int64, requestedVersion, deviceID string) (Download, error) {
-	deviceID = strings.TrimSpace(deviceID)
-	hardwareID, err := testFlightHardwareID(deviceID)
-	if err != nil {
-		return Download{}, errors.New("TestFlight download needs the source device UDID; pass --udid")
-	}
-
+func (c *Client) SelectBuild(ctx context.Context, appID int64, requestedVersion string) (SelectedBuild, error) {
 	versions, err := c.ListVersions(ctx, appID)
 	if err != nil {
-		return Download{}, err
+		return SelectedBuild{}, err
 	}
 
 	version, err := selectVersion(versions, requestedVersion)
 	if err != nil {
-		return Download{}, err
+		return SelectedBuild{}, err
 	}
 
-	builds, err := c.listBuilds(ctx, appID, version)
+	build, err := c.resolveBuild(ctx, appID, version)
 	if err != nil {
-		return Download{}, err
+		return SelectedBuild{}, err
 	}
 
-	if len(builds) == 0 {
-		return Download{}, fmt.Errorf("no active TestFlight build is available for version %s", version)
-	}
+	return SelectedBuild{AppID: appID, BundleID: build.BundleID, Version: version, BuildID: build.ID}, nil
+}
 
-	build := builds[0]
+func (c *Client) AuthorizeDownload(ctx context.Context, build SelectedBuild, deviceID string) (appstore.DownloadTicket, error) {
+	deviceID = strings.TrimSpace(deviceID)
+
+	hardwareID, err := testFlightHardwareID(deviceID)
+	if err != nil {
+		return appstore.DownloadTicket{}, fmt.Errorf("source device --udid: %w", err)
+	}
 
 	dsid, err := strconv.ParseUint(c.dsid, 10, 64)
 	if err != nil {
-		return Download{}, errors.New("invalid App Store account identifier")
+		return appstore.DownloadTicket{}, errors.New("invalid App Store account identifier")
 	}
 
-	kbsync, err := c.store.TestFlightKBSync(ctx, dsid)
+	kbsync, err := c.store.TestFlightKBSync(ctx, dsid, hardwareID)
 	if err != nil {
-		return Download{}, fmt.Errorf("prepare TestFlight FairPlay request: %w", err)
+		return appstore.DownloadTicket{}, fmt.Errorf("prepare TestFlight FairPlay request: %w", err)
 	}
 
 	payload := map[string]any{
 		"kbSync":           kbsync,
 		"udid":             deviceID,
 		"deviceName":       "ipadecrypt",
-		"storefrontId":     c.storefront,
+		"storefrontId":     strings.Split(c.storefront, ",")[0],
 		"isFromAutoUpdate": false,
 	}
-	path := c.accountPath() + "/apps/" + strconv.FormatInt(appID, 10) +
-		"/builds/" + strconv.FormatInt(build.ID, 10) + "/install"
+	path := c.accountPath() + "/apps/" + strconv.FormatInt(build.AppID, 10) +
+		"/builds/" + strconv.FormatInt(build.BuildID, 10) + "/install"
 
 	var response installResponse
 	if err := c.send(ctx, http.MethodPost, path, payload, &response); err != nil {
-		return Download{}, err
+		return appstore.DownloadTicket{}, err
 	}
 
 	ticket, identity, err := parseInstallData(response.Data)
 	if err != nil {
-		return Download{}, err
+		return appstore.DownloadTicket{}, err
 	}
-	ticket.HardwareID = hardwareID
 
-	if identity.Version != version {
-		return Download{}, fmt.Errorf("TestFlight returned version %q instead of %q", identity.Version, version)
+	ticket.Transport.HardwareID = hardwareID
+
+	if identity.Version != build.Version {
+		return appstore.DownloadTicket{}, fmt.Errorf("TestFlight returned version %q instead of %q", identity.Version, build.Version)
 	}
 
 	if build.BundleID != "" && identity.BundleID != build.BundleID {
-		return Download{}, errors.New("TestFlight returned a different app bundle")
+		return appstore.DownloadTicket{}, errors.New("TestFlight returned a different app bundle")
 	}
 
-	return Download{Ticket: ticket, BundleID: identity.BundleID, Version: identity.Version, BuildID: build.ID}, nil
+	return ticket, nil
 }
 
 func testFlightHardwareID(deviceID string) ([]byte, error) {
@@ -208,10 +208,10 @@ func parseInstallData(data installData) (appstore.DownloadTicket, framework, err
 	metadata["bundleIdentifier"] = data.Framework.BundleID
 
 	return appstore.DownloadTicket{
-		URL:      packageURL,
-		Sinfs:    envelope.Sinfs,
-		DPInfo:   dpInfo,
-		Metadata: metadata,
+		URL:       packageURL,
+		Sinfs:     envelope.Sinfs,
+		Transport: &appstore.PackageTransport{DPInfo: dpInfo},
+		Metadata:  metadata,
 		AssetInfo: map[string]any{
 			"file-size": packageSize,
 		},

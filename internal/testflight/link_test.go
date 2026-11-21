@@ -31,7 +31,7 @@ func TestParsePublicLinkRejectsUntrustedInput(t *testing.T) {
 }
 
 func TestPublicLinkPathIsAccountScoped(t *testing.T) {
-	client := Client{accountID: "account/id"}
+	client := Client{session: Session{AccountID: "account/id"}}
 	got := client.publicLinkPath("NLskzwi5")
 	want := "/v3/accounts/account%2Fid/ru/NLskzwi5"
 

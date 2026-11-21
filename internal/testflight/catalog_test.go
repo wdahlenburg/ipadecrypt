@@ -3,33 +3,38 @@ package testflight
 import "testing"
 
 func TestSelectVersion(t *testing.T) {
-	versions := []Version{{Name: "6.27.0"}, {Name: "6.26.0"}}
+	versions := []Version{{Name: "1.0.1"}, {Name: "1.0.0"}}
 
 	latest, err := selectVersion(versions, "")
-	if err != nil || latest != "6.27.0" {
+	if err != nil || latest != "1.0.1" {
 		t.Fatalf("latest = %q, %v", latest, err)
 	}
 
-	selected, err := selectVersion(versions, " 6.26.0 ")
-	if err != nil || selected != "6.26.0" {
+	selected, err := selectVersion(versions, " 1.0.0 ")
+	if err != nil || selected != "1.0.0" {
 		t.Fatalf("selected = %q, %v", selected, err)
 	}
 
-	if _, err := selectVersion(versions, "5.0.0"); err == nil {
+	if _, err := selectVersion(versions, "1.2.0"); err == nil {
 		t.Fatal("selected an unavailable version")
 	}
 }
 
-func TestSortBuildsChoosesLatestAvailableThenNewestUpload(t *testing.T) {
+func TestNewestBuildPrefersLatestThenKnownUploadDate(t *testing.T) {
 	builds := []build{
 		{ID: 10, UploadDate: "2026-11-18T12:00:00Z"},
 		{ID: 30, UploadDate: "2026-11-19T12:00:00Z"},
 		{ID: 20, UploadDate: "2026-11-17T12:00:00Z", Latest: true},
 	}
 
-	sortBuilds(builds)
+	if got := newestBuild(builds, "1.0.0"); got.ID != 20 {
+		t.Fatalf("build = %d, want 20", got.ID)
+	}
 
-	if builds[0].ID != 20 || builds[1].ID != 30 || builds[2].ID != 10 {
-		t.Fatalf("build order = %d, %d, %d", builds[0].ID, builds[1].ID, builds[2].ID)
+	builds[2].Latest = false
+
+	builds = append(builds, build{ID: 40, UploadDate: "invalid"})
+	if got := newestBuild(builds, "1.0.0"); got.ID != 30 {
+		t.Fatalf("build = %d, want 30", got.ID)
 	}
 }

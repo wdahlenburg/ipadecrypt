@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -60,13 +62,10 @@ func testFlightLinkHandler(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	_, client, _, err := openTestFlight(cmd.Context(), cfg, paths)
-	if err != nil {
-		tui.Err("connect to TestFlight: %v", err)
-		return
-	}
-
-	link, err := client.ResolvePublicLink(cmd.Context(), code)
+	_, client, link, err := withTestFlightSession(cmd.Context(), cfg, paths, false, true,
+		func(client *testflight.Client, ctx context.Context) (testflight.PublicLink, error) {
+			return client.ResolvePublicLink(ctx, code)
+		})
 	if err != nil {
 		tui.Err("preview TestFlight link: %v", err)
 		return
@@ -199,53 +198,53 @@ func testFlightDecryptHandler(cmd *cobra.Command, args []string) {
 	}
 
 	live := tui.NewLive()
-	live.Spin("authorizing %s", app.Name)
+	live.Spin("selecting a build for %s", app.Name)
 
-	download, err := client.PrepareDownload(cmd.Context(), appID, testFlightVersion, deviceID)
+	build, err := client.SelectBuild(cmd.Context(), appID, testFlightVersion)
 	if err != nil {
-		live.Fail("authorize TestFlight download: %v", err)
+		live.Fail("select TestFlight build: %v", err)
 		return
 	}
 
-	live.OK("selected %s %s", app.Name, download.Version)
+	live.OK("selected %s %s", app.Name, build.Version)
 
-	encryptedPath, err := paths.CachedTestFlightIPA(download.BundleID, download.Version, download.BuildID)
+	encryptedPath, err := paths.CachedTestFlightIPA(cfg.Apple.DirectoryServicesIdentifier, build.Version, build.AppID, build.BuildID)
 	if err != nil {
 		tui.Err("cache path: %v", err)
 		return
 	}
 
-	if cachedTestFlightPackageMatches(encryptedPath, download.BundleID, download.Version) {
+	bundleID := build.BundleID
+	if cachedTestFlightPackageMatches(encryptedPath, bundleID, build.Version) {
 		tui.OK("using cached TestFlight IPA")
 	} else {
 		live = tui.NewLive()
+		live.Spin("authorizing %s", app.Name)
+
+		ticket, err := client.AuthorizeDownload(cmd.Context(), build, deviceID)
+		if err != nil {
+			live.Fail("authorize TestFlight download: %v", err)
+			return
+		}
+
+		bundleID = ticket.BundleID()
+
 		live.Spin("downloading TestFlight IPA")
 
-		_, err = store.CompleteDownload(cfg.Apple.Account(), download.Ticket, encryptedPath, func(current, total int64) {
+		_, err = store.CompleteDownload(cfg.Apple.Account(), ticket, encryptedPath, func(current, total int64) {
 			live.Message("%s", transferProgressText("downloading TestFlight IPA", current, total))
 			live.Progress(current, total)
 		})
 		if err != nil {
-			_ = os.Remove(encryptedPath)
-			_ = os.Remove(encryptedPath + ".tmp")
-
 			live.Fail("TestFlight download failed: %v", err)
 
 			return
 		}
 
-		if !cachedTestFlightPackageMatches(encryptedPath, download.BundleID, download.Version) {
-			_ = os.Remove(encryptedPath)
-
-			live.Fail("downloaded TestFlight IPA does not match %s %s", download.BundleID, download.Version)
-
-			return
-		}
-
-		live.OK("downloaded %s %s", app.Name, download.Version)
+		live.OK("downloaded %s %s", app.Name, build.Version)
 	}
 
-	outputPath, err := localOutputPath(decryptOutput, download.BundleID, download.Version)
+	outputPath, err := localOutputPath(decryptOutput, bundleID, build.Version)
 	if err != nil {
 		tui.Err("output path: %v", err)
 		return
@@ -294,13 +293,24 @@ func cachedTestFlightPackageMatches(path, bundleID, version string) bool {
 }
 
 func openTestFlight(ctx context.Context, cfg *config.Config, paths *config.Paths) (*appstore.Client, *testflight.Client, []testflight.App, error) {
+	return withTestFlightSession(ctx, cfg, paths, false, true, (*testflight.Client).ListApps)
+}
+
+// Run a read operation with the saved session, authenticating once if needed.
+func withTestFlightSession[T any](ctx context.Context, cfg *config.Config, paths *config.Paths, forceLogin, interactive bool, read func(*testflight.Client, context.Context) (T, error)) (*appstore.Client, *testflight.Client, T, error) {
+	var zero T
 	if cfg.Apple.DirectoryServicesIdentifier == "" {
-		return nil, nil, nil, errors.New("no Apple account configured; run `ipadecrypt bootstrap` to sign in")
+		return nil, nil, zero, errors.New("no Apple account configured; run `ipadecrypt bootstrap` to sign in")
+	}
+
+	deviceID, err := testFlightDownloadIdentity(testFlightUDID, cfg.TestFlight.DeviceID, cfg.Device.UDID)
+	if err != nil {
+		return nil, nil, zero, err
 	}
 
 	store, err := appstore.New(filepath.Join(paths.Root, "cookies"))
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open App Store session: %w", err)
+		return nil, nil, zero, fmt.Errorf("open App Store session: %w", err)
 	}
 
 	newClient := func(session testflight.Session) (*testflight.Client, error) {
@@ -308,115 +318,109 @@ func openTestFlight(ctx context.Context, cfg *config.Config, paths *config.Paths
 	}
 	session := testflight.Session{SessionID: cfg.TestFlight.SessionID, AccountID: cfg.TestFlight.AccountID}
 
-	client, err := newClient(session)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	apps, err := client.ListApps(ctx)
-	if !errors.Is(err, testflight.ErrSessionExpired) {
-		if err == nil && testFlightUDID != "" && cfg.TestFlight.DeviceID != testFlightUDID {
-			cfg.TestFlight.DeviceID = testFlightUDID
-			if err := cfg.Save(); err != nil {
-				return nil, nil, nil, fmt.Errorf("save TestFlight device: %w", err)
-			}
+	if !forceLogin {
+		client, err := newClient(session)
+		if err != nil {
+			return nil, nil, zero, err
 		}
 
-		return store, client, apps, err
+		result, err := read(client, ctx)
+		if !errors.Is(err, testflight.ErrSessionExpired) {
+			if err == nil && cfg.TestFlight.DeviceID != deviceID {
+				cfg.TestFlight.DeviceID = deviceID
+				if err := cfg.Save(); err != nil {
+					return nil, nil, zero, fmt.Errorf("save TestFlight device: %w", err)
+				}
+			}
+
+			return store, client, result, err
+		}
 	}
 
-	deviceConfig, ok := configuredTestFlightDevice(cfg)
-	if !ok {
-		return nil, nil, nil, errors.New("no current TestFlight session; configure a jailbroken device or pass --udid")
+	if cfg.Apple.Email == "" || cfg.Apple.Password == "" {
+		return nil, nil, zero, errors.New("no saved Apple credentials; run `ipadecrypt bootstrap` to sign in")
 	}
 
-	tui.Info("finding the signed-in TestFlight session on the device…")
+	tui.Info("authenticating to TestFlight…")
 
-	session, err = testflight.ImportSession(ctx, deviceConfig)
+	client, err := newClient(testflight.Session{})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("find TestFlight session: %w", err)
+		return nil, nil, zero, err
+	}
+
+	var verify func() (string, error)
+	if interactive {
+		verify = func() (string, error) {
+			return tui.Prompt("Apple sent a 6-digit code - enter it")
+		}
+	}
+
+	session, err = client.Authenticate(ctx, cfg.Apple.Email, cfg.Apple.Password, verify)
+	if err != nil {
+		return nil, nil, zero, err
 	}
 
 	client, err = newClient(session)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, zero, err
 	}
 
-	apps, err = client.ListApps(ctx)
+	result, err := read(client, ctx)
 	if err != nil {
-		return store, client, nil, err
+		return nil, nil, zero, err
 	}
 
-	cfg.TestFlight = config.TestFlight{SessionID: session.SessionID, AccountID: session.AccountID, DeviceID: deviceConfig.UDID}
+	cfg.TestFlight = config.TestFlight{SessionID: session.SessionID, AccountID: session.AccountID, DeviceID: deviceID}
 	if err := cfg.Save(); err != nil {
-		return nil, nil, nil, fmt.Errorf("save TestFlight session: %w", err)
+		return nil, nil, zero, fmt.Errorf("save TestFlight session: %w", err)
 	}
 
-	tui.OK("connected to TestFlight")
+	if !forceLogin {
+		tui.OK("connected to TestFlight")
+	}
 
-	return store, client, apps, nil
+	return store, client, result, nil
 }
 
-func testFlightImportHandler(cmd *cobra.Command, _ []string) {
+func testFlightDownloadIdentity(override, saved, configured string) (string, error) {
+	valid := func(value string) bool {
+		decoded, err := hex.DecodeString(value)
+		return err == nil && len(decoded) == 20
+	}
+	if override != "" {
+		if !valid(override) {
+			return "", errors.New("TestFlight --udid must contain 40 hexadecimal digits")
+		}
+
+		return override, nil
+	}
+
+	for _, value := range []string{saved, configured} {
+		if valid(value) {
+			return value, nil
+		}
+	}
+
+	var identity [20]byte
+	if _, err := rand.Read(identity[:]); err != nil {
+		return "", fmt.Errorf("create TestFlight download identity: %w", err)
+	}
+
+	return hex.EncodeToString(identity[:]), nil
+}
+
+func testFlightBootstrapHandler(cmd *cobra.Command, _ []string) {
 	cfg, paths, err := loadConfigOrDefault(rootDirOverride)
 	if err != nil {
 		tui.Err("%v", err)
 		return
 	}
 
-	deviceConfig, ok := configuredTestFlightDevice(cfg)
-	if !ok {
-		tui.Err("no jailbroken device configured")
-		tui.Info("run `ipadecrypt bootstrap` or pass --udid for USB import")
-
+	if _, _, _, err := withTestFlightSession(cmd.Context(), cfg, paths, true, true, (*testflight.Client).ListApps); err != nil {
+		tui.Err("authenticate TestFlight: %v", err)
 		return
 	}
 
-	session, err := testflight.ImportSession(cmd.Context(), deviceConfig)
-	if err != nil {
-		tui.Err("import TestFlight session: %v", err)
-		return
-	}
-
-	store, err := appstore.New(filepath.Join(paths.Root, "cookies"))
-	if err != nil {
-		tui.Err("open App Store session: %v", err)
-		return
-	}
-
-	client, err := testflight.New(store, cfg.Apple.Account(), session)
-	if err != nil {
-		tui.Err("validate TestFlight session: %v", err)
-		return
-	}
-
-	if _, err := client.ListApps(cmd.Context()); err != nil {
-		tui.Err("validate TestFlight session: %v", err)
-		return
-	}
-
-	cfg.TestFlight = config.TestFlight{
-		SessionID: session.SessionID,
-		AccountID: session.AccountID,
-		DeviceID:  deviceConfig.UDID,
-	}
-	if err := cfg.Save(); err != nil {
-		tui.Err("save TestFlight session: %v", err)
-		return
-	}
-
-	tui.OK("imported TestFlight session")
+	tui.OK("authenticated to TestFlight")
 	tui.Info("run `ipadecrypt testflight apps` to list available apps")
-}
-
-func configuredTestFlightDevice(cfg *config.Config) (config.Device, bool) {
-	deviceConfig := cfg.Device
-	if testFlightUDID != "" {
-		deviceConfig.USB = true
-		deviceConfig.UDID = testFlightUDID
-		deviceConfig.Host = ""
-		deviceConfig.Port = 2222
-	}
-
-	return deviceConfig, deviceConfig.USB || deviceConfig.Host != ""
 }

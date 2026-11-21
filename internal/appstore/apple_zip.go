@@ -25,9 +25,11 @@ type appleLZFSEReader struct {
 func (r *appleLZFSEReader) Read(p []byte) (int, error) {
 	if r.reader == nil && r.err == nil {
 		var compressed []byte
+
 		compressed, r.err = io.ReadAll(r.source)
 		if r.err == nil {
 			var uncompressed []byte
+
 			uncompressed, r.err = lzfse.Decompress(compressed)
 			r.reader = bytes.NewReader(uncompressed)
 		}

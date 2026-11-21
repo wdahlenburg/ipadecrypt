@@ -16,6 +16,7 @@ func TestParseInstallData(t *testing.T) {
 	}
 
 	dpInfo := bytes.Repeat([]byte{4}, 88)
+
 	ticket, identity, err := parseInstallData(installData{
 		ITunesMetadata: map[string]any{"betaExternalVersionId": int64(123)},
 		Framework: framework{
@@ -42,8 +43,8 @@ func TestParseInstallData(t *testing.T) {
 		t.Fatalf("sinfs = %#v", ticket.Sinfs)
 	}
 
-	if !bytes.Equal(ticket.DPInfo, dpInfo) {
-		t.Fatalf("dpInfo = %x", ticket.DPInfo)
+	if ticket.Transport == nil || !bytes.Equal(ticket.Transport.DPInfo, dpInfo) {
+		t.Fatal("ticket did not preserve transport metadata")
 	}
 }
 

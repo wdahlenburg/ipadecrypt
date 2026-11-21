@@ -24,7 +24,7 @@ type Config struct {
 	path string
 }
 
-// TestFlight holds the renewable session imported from the TestFlight app.
+// TestFlight holds the renewable session authenticated with the Apple account.
 // No activation or device install response is persisted.
 type TestFlight struct {
 	SessionID string `json:"sessionId,omitempty"`

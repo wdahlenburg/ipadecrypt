@@ -1,16 +1,43 @@
 package testflight
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
+
+type App struct {
+	ID            int64  `json:"appId"`
+	Name          string `json:"name"`
+	DeveloperName string `json:"developerName"`
+}
+
+func (c *Client) ListApps(ctx context.Context) ([]App, error) {
+	path := "/v4/accounts/" + url.PathEscape(c.session.AccountID) + "/apps"
+
+	var response struct {
+		Data struct {
+			Apps []App `json:"apps"`
+		} `json:"data"`
+	}
+	if err := c.send(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return nil, err
+	}
+
+	apps := response.Data.Apps
+	slices.SortFunc(apps, func(a, b App) int {
+		return cmp.Or(cmp.Compare(a.DeveloperName, b.DeveloperName), cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+	})
+
+	return apps, nil
+}
 
 type Version struct {
 	Name string `json:"trainVersion"`
@@ -54,9 +81,9 @@ func (c *Client) ListVersions(ctx context.Context, appID int64) ([]Version, erro
 	return versions, nil
 }
 
-func (c *Client) listBuilds(ctx context.Context, appID int64, version string) ([]build, error) {
+func (c *Client) resolveBuild(ctx context.Context, appID int64, version string) (build, error) {
 	if appID <= 0 || strings.TrimSpace(version) == "" {
-		return nil, errors.New("TestFlight app ID and version are required")
+		return build{}, errors.New("TestFlight app ID and version are required")
 	}
 
 	path := c.accountPath() + "/apps/" + strconv.FormatInt(appID, 10) +
@@ -66,39 +93,37 @@ func (c *Client) listBuilds(ctx context.Context, appID int64, version string) ([
 		Data []build `json:"data"`
 	}
 	if err := c.send(ctx, http.MethodGet, path, nil, &response); err != nil {
-		return nil, err
+		return build{}, err
 	}
 
-	builds := make([]build, 0, len(response.Data))
-	for _, build := range response.Data {
-		if build.ID <= 0 || (build.Version != "" && build.Version != version) ||
-			(build.BundleID != "" && !identityToken.MatchString(build.BundleID)) {
+	selected := newestBuild(response.Data, version)
+	if selected.ID == 0 {
+		return build{}, fmt.Errorf("no active TestFlight build is available for version %s", version)
+	}
+
+	return selected, nil
+}
+
+func newestBuild(builds []build, version string) build {
+	var (
+		best     build
+		bestDate time.Time
+	)
+
+	for _, candidate := range builds {
+		if candidate.ID <= 0 || (candidate.Version != "" && candidate.Version != version) ||
+			(candidate.BundleID != "" && !identityToken.MatchString(candidate.BundleID)) {
 			continue
 		}
 
-		builds = append(builds, build)
+		date, _ := time.Parse(time.RFC3339, candidate.UploadDate)
+		if best.ID == 0 || (candidate.Latest && !best.Latest) ||
+			(candidate.Latest == best.Latest && (date.After(bestDate) || (date.Equal(bestDate) && candidate.ID > best.ID))) {
+			best, bestDate = candidate, date
+		}
 	}
 
-	sortBuilds(builds)
-
-	return builds, nil
-}
-
-func sortBuilds(builds []build) {
-	sort.SliceStable(builds, func(i, j int) bool {
-		if builds[i].Latest != builds[j].Latest {
-			return builds[i].Latest
-		}
-
-		iTime, iErr := time.Parse(time.RFC3339, builds[i].UploadDate)
-
-		jTime, jErr := time.Parse(time.RFC3339, builds[j].UploadDate)
-		if iErr == nil && jErr == nil && !iTime.Equal(jTime) {
-			return iTime.After(jTime)
-		}
-
-		return builds[i].ID > builds[j].ID
-	})
+	return best
 }
 
 func selectVersion(versions []Version, requested string) (string, error) {
@@ -121,5 +146,5 @@ func selectVersion(versions []Version, requested string) (string, error) {
 }
 
 func (c *Client) accountPath() string {
-	return "/v2/accounts/" + url.PathEscape(c.accountID)
+	return "/v2/accounts/" + url.PathEscape(c.session.AccountID)
 }

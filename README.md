@@ -87,6 +87,14 @@ A three-step interactive wizard:
 2. **Credential mint** - Connects once to your jailbroken device over SSH and extracts the reusable account credential, cached under `~/.ipadecrypt/credentials/`. If an Apple Arcade app from the account is installed, it also mints the account's Arcade credential; without one that step is skipped, and you can add it later by installing an Arcade app and re-running with `--remint`.
 3. **On-device fallback check** - Verifies the device is ready to decrypt apps the offline decryptor can't handle (AppSync Unified + `appinst` present, helper uploads and execs). Best-effort: a missing prerequisite only disables that fallback and is reported, not fatal.
 
+Bootstrap also attempts TestFlight authentication with the saved Apple
+credentials. If Apple requires another verification code, that optional step
+is skipped. Add or refresh it later without repeating the other bootstrap work:
+
+```sh
+ipadecrypt bootstrap testflight
+```
+
 Run it again anytime; it skips minting if a credential is already cached (pass
 `--remint` to force). After bootstrap, decrypting is fully offline - the device
 is only needed again for the on-device fallback.
@@ -115,7 +123,7 @@ ipadecrypt versions <bundle-id|app-store-id|app-store-url>
 
 ### TestFlight apps and versions
 
-Sign in to TestFlight and open it once on the jailbroken iPhone, then run:
+Use the Apple Account configured by `ipadecrypt bootstrap`:
 
 ```sh
 ipadecrypt testflight apps
@@ -129,14 +137,12 @@ ipadecrypt testflight link <link-or-code>
 ipadecrypt testflight link <link-or-code> --accept
 ```
 
-If a saved session is missing or expired, `apps` automatically finds the
-signed-in session on the configured device, saves it, and retries the listing.
-Pass `--udid <device-udid>` (`ipadecrypt testflight apps --udid <device-udid>`)
-to use USB instead of the configured network connection. The setup reads
-TestFlight's on-disk HTTP cache over SSH; it does not use Frida, intercept an
-Install tap, or install a build. Later listings run without the phone until Apple
-expires the saved session. `testflight import-session` remains available for
-an explicit refresh.
+If a saved session is missing or expired, ipadecrypt signs in with the saved
+Apple credentials, validates the session, and retries. Apple may request a
+verification code from a trusted device. TestFlight does not need to be
+installed or signed in on the phone. The apps shown depend on the invitations
+accepted by that Apple Account. Use `bootstrap testflight` for an explicit
+refresh.
 
 List the versions for an app, then decrypt the newest version or choose one by
 its normal version string:
@@ -149,8 +155,8 @@ ipadecrypt testflight decrypt <app-id> --version 1.0.0
 
 Build IDs and build numbers are internal and are not part of the command-line
 workflow. If TestFlight has multiple active uploads for the same version,
-ipadecrypt chooses the newest upload. The first download needs the source
-device UDID; pass `--udid` if it was not saved during session discovery.
+ipadecrypt chooses the newest upload. Setup saves a download identity, using
+the configured device UDID when available or generating one locally.
 
 ## Known issues
 
