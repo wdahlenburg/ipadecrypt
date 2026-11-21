@@ -27,6 +27,18 @@ type SelectedBuild struct {
 	BuildID  int64
 }
 
+// DownloadTicket keeps TestFlight package wrapping separate from Store downloads.
+type DownloadTicket struct {
+	appstore.DownloadTicket
+	DPInfo     []byte
+	HardwareID []byte
+}
+
+func (t DownloadTicket) BundleID() string {
+	bundleID, _ := t.Metadata["bundleIdentifier"].(string)
+	return bundleID
+}
+
 type installResponse struct {
 	Data installData `json:"data"`
 }
@@ -81,22 +93,22 @@ func (c *Client) SelectBuild(ctx context.Context, appID int64, requestedVersion 
 	return SelectedBuild{AppID: appID, BundleID: build.BundleID, Version: version, BuildID: build.ID}, nil
 }
 
-func (c *Client) AuthorizeDownload(ctx context.Context, build SelectedBuild, deviceID string) (appstore.DownloadTicket, error) {
+func (c *Client) AuthorizeDownload(ctx context.Context, build SelectedBuild, deviceID string) (DownloadTicket, error) {
 	deviceID = strings.TrimSpace(deviceID)
 
 	hardwareID, err := testFlightHardwareID(deviceID)
 	if err != nil {
-		return appstore.DownloadTicket{}, fmt.Errorf("source device --udid: %w", err)
+		return DownloadTicket{}, fmt.Errorf("source device --udid: %w", err)
 	}
 
 	dsid, err := strconv.ParseUint(c.dsid, 10, 64)
 	if err != nil {
-		return appstore.DownloadTicket{}, errors.New("invalid App Store account identifier")
+		return DownloadTicket{}, errors.New("invalid App Store account identifier")
 	}
 
 	kbsync, err := c.store.TestFlightKBSync(ctx, dsid, hardwareID)
 	if err != nil {
-		return appstore.DownloadTicket{}, fmt.Errorf("prepare TestFlight FairPlay request: %w", err)
+		return DownloadTicket{}, fmt.Errorf("prepare TestFlight FairPlay request: %w", err)
 	}
 
 	payload := map[string]any{
@@ -111,22 +123,22 @@ func (c *Client) AuthorizeDownload(ctx context.Context, build SelectedBuild, dev
 
 	var response installResponse
 	if err := c.send(ctx, http.MethodPost, path, payload, &response); err != nil {
-		return appstore.DownloadTicket{}, err
+		return DownloadTicket{}, err
 	}
 
 	ticket, identity, err := parseInstallData(response.Data)
 	if err != nil {
-		return appstore.DownloadTicket{}, err
+		return DownloadTicket{}, err
 	}
 
-	ticket.Transport.HardwareID = hardwareID
+	ticket.HardwareID = hardwareID
 
 	if identity.Version != build.Version {
-		return appstore.DownloadTicket{}, fmt.Errorf("TestFlight returned version %q instead of %q", identity.Version, build.Version)
+		return DownloadTicket{}, fmt.Errorf("TestFlight returned version %q instead of %q", identity.Version, build.Version)
 	}
 
 	if build.BundleID != "" && identity.BundleID != build.BundleID {
-		return appstore.DownloadTicket{}, errors.New("TestFlight returned a different app bundle")
+		return DownloadTicket{}, errors.New("TestFlight returned a different app bundle")
 	}
 
 	return ticket, nil
@@ -145,14 +157,14 @@ func testFlightHardwareID(deviceID string) ([]byte, error) {
 	return hardwareID, nil
 }
 
-func parseInstallData(data installData) (appstore.DownloadTicket, framework, error) {
+func parseInstallData(data installData) (DownloadTicket, framework, error) {
 	packageURL := data.Packages.Full.URL
 	if packageURL == "" {
 		packageURL = data.URL
 	}
 
 	if err := validatePackageURL(packageURL); err != nil {
-		return appstore.DownloadTicket{}, framework{}, err
+		return DownloadTicket{}, framework{}, err
 	}
 
 	encodedSinfs := data.Packages.Full.Sinf
@@ -161,16 +173,16 @@ func parseInstallData(data installData) (appstore.DownloadTicket, framework, err
 	}
 
 	if encodedSinfs == "" {
-		return appstore.DownloadTicket{}, framework{}, errors.New("TestFlight download contains no SINF")
+		return DownloadTicket{}, framework{}, errors.New("TestFlight download contains no SINF")
 	}
 
 	var envelope sinfEnvelope
 	if _, err := plist.Unmarshal([]byte(encodedSinfs), &envelope); err != nil {
-		return appstore.DownloadTicket{}, framework{}, fmt.Errorf("decode TestFlight SINF: %w", err)
+		return DownloadTicket{}, framework{}, fmt.Errorf("decode TestFlight SINF: %w", err)
 	}
 
 	if len(envelope.Sinfs) == 0 {
-		return appstore.DownloadTicket{}, framework{}, errors.New("TestFlight download contains no decoded SINF")
+		return DownloadTicket{}, framework{}, errors.New("TestFlight download contains no decoded SINF")
 	}
 
 	encodedDPInfo := data.Packages.Full.DPInfo
@@ -180,17 +192,17 @@ func parseInstallData(data installData) (appstore.DownloadTicket, framework, err
 
 	dpInfo, err := base64.StdEncoding.Strict().DecodeString(encodedDPInfo)
 	if err != nil {
-		return appstore.DownloadTicket{}, framework{}, fmt.Errorf("decode TestFlight dpInfo: %w", err)
+		return DownloadTicket{}, framework{}, fmt.Errorf("decode TestFlight dpInfo: %w", err)
 	}
 
 	if len(dpInfo) != 88 {
-		return appstore.DownloadTicket{}, framework{}, errors.New("TestFlight download contains invalid dpInfo")
+		return DownloadTicket{}, framework{}, errors.New("TestFlight download contains invalid dpInfo")
 	}
 
 	if data.Framework.BundleID == "" || data.Framework.Version == "" || data.Framework.BuildVersion == "" ||
 		!identityToken.MatchString(data.Framework.BundleID) || !identityToken.MatchString(data.Framework.Version) ||
 		!identityToken.MatchString(data.Framework.BuildVersion) {
-		return appstore.DownloadTicket{}, framework{}, errors.New("TestFlight download has an invalid app identity")
+		return DownloadTicket{}, framework{}, errors.New("TestFlight download has an invalid app identity")
 	}
 
 	packageSize := data.Packages.Full.PackageSize
@@ -207,14 +219,12 @@ func parseInstallData(data installData) (appstore.DownloadTicket, framework, err
 	metadata["bundleVersion"] = data.Framework.BuildVersion
 	metadata["bundleIdentifier"] = data.Framework.BundleID
 
-	return appstore.DownloadTicket{
-		URL:       packageURL,
-		Sinfs:     envelope.Sinfs,
-		Transport: &appstore.PackageTransport{DPInfo: dpInfo},
-		Metadata:  metadata,
-		AssetInfo: map[string]any{
-			"file-size": packageSize,
+	return DownloadTicket{
+		DownloadTicket: appstore.DownloadTicket{
+			URL: packageURL, Sinfs: envelope.Sinfs, Metadata: metadata,
+			AssetInfo: map[string]any{"file-size": packageSize},
 		},
+		DPInfo: dpInfo,
 	}, data.Framework, nil
 }
 

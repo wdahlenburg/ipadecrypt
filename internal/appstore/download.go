@@ -17,9 +17,6 @@ import (
 	"time"
 
 	apphttp "github.com/londek/ipadecrypt/internal/apphttp"
-	"github.com/londek/ipadecrypt/internal/pipeline"
-	"github.com/londek/ipadecrypt/internal/sap/assets"
-	"github.com/londek/ipadecrypt/internal/sap/machine"
 	"howett.net/plist"
 )
 
@@ -36,23 +33,12 @@ type DownloadOutput struct {
 type DownloadTicket struct {
 	URL       string
 	Sinfs     []Sinf
-	Transport *PackageTransport
 	Metadata  map[string]any
 	AssetInfo map[string]any
 
 	// validatePlatform is set when the response came from a path that resolves
 	// the iPhone platform, so the package's Info.plist is checked.
 	validatePlatform bool
-}
-
-// PackageTransport carries the inputs needed to unwrap an encrypted CDN package.
-type PackageTransport struct {
-	DPInfo     []byte
-	HardwareID []byte
-}
-
-func (t DownloadTicket) BundleID() string {
-	return metaString(t.Metadata, "bundleIdentifier")
 }
 
 // Version returns CFBundleShortVersionString ("1.54.0") - the human-readable
@@ -126,13 +112,6 @@ type downloadItem struct {
 	validatePlatform bool
 }
 
-func (item downloadItem) ticket() DownloadTicket {
-	return DownloadTicket{
-		URL: item.URL, Sinfs: item.Sinfs, Metadata: item.Metadata,
-		AssetInfo: item.AssetInfo, validatePlatform: item.validatePlatform,
-	}
-}
-
 type downloadResult struct {
 	FailureType     string         `plist:"failureType,omitempty"`
 	CustomerMessage string         `plist:"customerMessage,omitempty"`
@@ -162,7 +141,7 @@ func (c *Client) PrepareDownload(acc *Account, app App, externalVersionID string
 
 	item.validatePlatform = validatePlatform
 
-	return item.ticket(), nil
+	return DownloadTicket(item), nil
 }
 
 // classifyDownload interprets a download-product response: its first item or
@@ -560,19 +539,10 @@ func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath s
 		return DownloadOutput{}, fmt.Errorf("download: outPath %q is a directory; CompleteDownload expects a file path", outPath)
 	}
 
+	item := downloadItem(ticket)
+
 	tmp := outPath + ".tmp"
-	if ticket.Transport != nil {
-		// Its response metadata and ciphertext belong to the same authorization.
-		dir, err := os.MkdirTemp(filepath.Dir(outPath), ".ipadecrypt-transport-*")
-		if err != nil {
-			return DownloadOutput{}, fmt.Errorf("stage encrypted package: %w", err)
-		}
-		defer os.RemoveAll(dir)
-
-		tmp = filepath.Join(dir, "package")
-	}
-
-	if err := c.fetchToFile(ticket.URL, tmp, onProgress); err != nil {
+	if err := c.fetchToFile(item.URL, tmp, onProgress); err != nil {
 		return DownloadOutput{}, err
 	}
 
@@ -580,19 +550,8 @@ func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath s
 		onProgress(ticket.FileSize(), ticket.FileSize())
 	}
 
-	packagePath := tmp
-	decryptedTmp := tmp + ".decrypted"
-
-	if transport := ticket.Transport; transport != nil {
-		if err := decryptStorePackage(transport.HardwareID, transport.DPInfo, tmp, decryptedTmp); err != nil {
-			return DownloadOutput{}, fmt.Errorf("decrypt package transport: %w", err)
-		}
-
-		packagePath = decryptedTmp
-	}
-
-	if ticket.validatePlatform {
-		if err := validatePackagePlatform(packagePath); err != nil {
+	if item.validatePlatform {
+		if err := validatePackagePlatform(tmp); err != nil {
 			if removeErr := os.Remove(tmp); removeErr != nil {
 				err = errors.Join(err, fmt.Errorf("remove tmp: %w", removeErr))
 			}
@@ -601,7 +560,7 @@ func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath s
 		}
 	}
 
-	if err := publishPackage(packagePath, outPath, ticket, acc); err != nil {
+	if err := applyPatches(tmp, outPath, item, acc); err != nil {
 		return DownloadOutput{}, err
 	}
 
@@ -609,76 +568,17 @@ func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath s
 		return DownloadOutput{}, fmt.Errorf("remove tmp: %w", err)
 	}
 
-	return DownloadOutput{DestinationPath: outPath, Sinfs: ticket.Sinfs}, nil
+	return DownloadOutput{DestinationPath: outPath, Sinfs: item.Sinfs}, nil
 }
 
-func publishPackage(src, dst string, ticket DownloadTicket, acc *Account) error {
-	stage, err := os.CreateTemp(filepath.Dir(dst), ".ipadecrypt-package-*")
-	if err != nil {
-		return fmt.Errorf("stage IPA: %w", err)
-	}
-	defer os.Remove(stage.Name())
-
-	patchErr := applyPatches(src, stage, ticket, acc)
-	if err := errors.Join(patchErr, stage.Close()); err != nil {
-		return err
-	}
-
-	if ticket.Transport != nil {
-		bundleID, version, err := pipeline.AppInfo(stage.Name())
-		if err != nil {
-			return fmt.Errorf("validate downloaded IPA: %w", err)
-		}
-
-		if bundleID != ticket.BundleID() || version != ticket.Version() {
-			return fmt.Errorf("downloaded IPA does not match %s %s", ticket.BundleID(), ticket.Version())
-		}
-	}
-
-	if err := os.Rename(stage.Name(), dst); err != nil {
-		return fmt.Errorf("publish IPA: %w", err)
-	}
-
-	return nil
+// FetchPackage reuses the Store CDN transfer and resume logic for a package.
+func (c *Client) FetchPackage(src, dst string, onProgress func(cur, total int64)) error {
+	return c.fetchToFile(src, dst, onProgress)
 }
 
-func decryptStorePackage(hardwareID, dpInfo []byte, srcPath, dstPath string) (err error) {
-	ctx := context.Background()
-
-	bundle, err := assets.Load(ctx)
-	if err != nil {
-		return fmt.Errorf("load StoreAgent assets: %w", err)
-	}
-
-	agent, err := machine.OpenStoreAgent(ctx, bundle, hardwareID, dpInfo)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err = errors.Join(err, agent.Close())
-	}()
-
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("open encrypted package: %w", err)
-	}
-	defer func() {
-		err = errors.Join(err, src.Close())
-	}()
-
-	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("create decrypted package: %w", err)
-	}
-	defer func() {
-		err = errors.Join(err, dst.Close())
-	}()
-
-	if _, err := agent.Decrypt(ctx, dst, src); err != nil {
-		return err
-	}
-
-	return nil
+// PatchPackage injects the account metadata and licensing from an authorized ticket.
+func PatchPackage(src, dst string, ticket DownloadTicket, acc *Account) error {
+	return applyPatches(src, dst, downloadItem(ticket), acc)
 }
 
 type platformPackageInfo struct {
@@ -939,7 +839,7 @@ func (p *progressWriter) Write(b []byte) (int, error) {
 
 // applyPatches rebuilds src into dst with iTunesMetadata.plist injected and
 // sinfs replicated into either manifest-listed paths or the SC_Info fallback.
-func applyPatches(src string, dst io.Writer, ticket DownloadTicket, acc *Account) (err error) {
+func applyPatches(src, dst string, item downloadItem, acc *Account) (err error) {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
@@ -949,7 +849,18 @@ func applyPatches(src string, dst io.Writer, ticket DownloadTicket, acc *Account
 
 	registerAppleZIPDecompressor(&zr.Reader)
 
-	zw := zip.NewWriter(dst)
+	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", dst, err)
+	}
+
+	defer func() {
+		if closeErr := df.Close(); closeErr != nil {
+			err = joinCleanupError(err, "close "+dst, closeErr)
+		}
+	}()
+
+	zw := zip.NewWriter(df)
 
 	defer func() {
 		if closeErr := zw.Close(); closeErr != nil {
@@ -961,13 +872,13 @@ func applyPatches(src string, dst io.Writer, ticket DownloadTicket, acc *Account
 		return err
 	}
 
-	if err := writeMetadataEntry(zw, ticket.Metadata, acc); err != nil {
+	if err := writeMetadataEntry(zw, item.Metadata, acc); err != nil {
 		return err
 	}
 
 	// Device-based downloads can omit sinfs even when the package has a
 	// manifest. Preserve the archive rewrite, but only inject supplied data.
-	if len(ticket.Sinfs) == 0 {
+	if len(item.Sinfs) == 0 {
 		return nil
 	}
 
@@ -987,19 +898,19 @@ func applyPatches(src string, dst io.Writer, ticket DownloadTicket, acc *Account
 	}
 
 	if manifest != nil {
-		if len(ticket.Sinfs) != len(manifest.SinfPaths) {
-			return fmt.Errorf("sinf count mismatch: have %d, manifest wants %d", len(ticket.Sinfs), len(manifest.SinfPaths))
+		if len(item.Sinfs) != len(manifest.SinfPaths) {
+			return fmt.Errorf("sinf count mismatch: have %d, manifest wants %d", len(item.Sinfs), len(manifest.SinfPaths))
 		}
 
 		for i, p := range manifest.SinfPaths {
 			entry := fmt.Sprintf("Payload/%s.app/%s", bundleName, p)
-			if err := writeEntry(zw, entry, ticket.Sinfs[i].Data); err != nil {
+			if err := writeEntry(zw, entry, item.Sinfs[i].Data); err != nil {
 				return err
 			}
 		}
 	} else {
 		entry := fmt.Sprintf("Payload/%s.app/SC_Info/%s.sinf", bundleName, info.BundleExecutable)
-		if err := writeEntry(zw, entry, ticket.Sinfs[0].Data); err != nil {
+		if err := writeEntry(zw, entry, item.Sinfs[0].Data); err != nil {
 			return err
 		}
 	}

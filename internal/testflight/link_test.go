@@ -4,12 +4,12 @@ import "testing"
 
 func TestParsePublicLink(t *testing.T) {
 	for _, input := range []string{
-		"NLskzwi5",
-		" https://testflight.apple.com/join/NLskzwi5 ",
-		"itms-beta://testflight.apple.com/join/NLskzwi5",
+		"FAKE1234",
+		" https://testflight.apple.com/join/FAKE1234 ",
+		"itms-beta://testflight.apple.com/join/FAKE1234",
 	} {
 		code, err := ParsePublicLink(input)
-		if err != nil || code != "NLskzwi5" {
+		if err != nil || code != "FAKE1234" {
 			t.Errorf("ParsePublicLink(%q) = %q, %v", input, code, err)
 		}
 	}
@@ -19,10 +19,10 @@ func TestParsePublicLinkRejectsUntrustedInput(t *testing.T) {
 	for _, input := range []string{
 		"",
 		"not-a-code",
-		"https://example.com/join/NLskzwi5",
-		"https://testflight.apple.com.evil.example/join/NLskzwi5",
-		"https://testflight.apple.com/join/NLskzwi5/extra",
-		"https://testflight.apple.com/join/NLskzwi5?accept=true",
+		"https://example.com/join/FAKE1234",
+		"https://testflight.apple.com.evil.example/join/FAKE1234",
+		"https://testflight.apple.com/join/FAKE1234/extra",
+		"https://testflight.apple.com/join/FAKE1234?accept=true",
 	} {
 		if _, err := ParsePublicLink(input); err == nil {
 			t.Errorf("ParsePublicLink(%q) succeeded", input)
@@ -32,8 +32,8 @@ func TestParsePublicLinkRejectsUntrustedInput(t *testing.T) {
 
 func TestPublicLinkPathIsAccountScoped(t *testing.T) {
 	client := Client{session: Session{AccountID: "account/id"}}
-	got := client.publicLinkPath("NLskzwi5")
-	want := "/v3/accounts/account%2Fid/ru/NLskzwi5"
+	got := client.publicLinkPath("FAKE1234")
+	want := "/v3/accounts/account%2Fid/ru/FAKE1234"
 
 	if got != want {
 		t.Fatalf("path = %q, want %q", got, want)

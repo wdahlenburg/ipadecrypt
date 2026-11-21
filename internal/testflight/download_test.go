@@ -43,7 +43,7 @@ func TestParseInstallData(t *testing.T) {
 		t.Fatalf("sinfs = %#v", ticket.Sinfs)
 	}
 
-	if ticket.Transport == nil || !bytes.Equal(ticket.Transport.DPInfo, dpInfo) {
+	if !bytes.Equal(ticket.DPInfo, dpInfo) {
 		t.Fatal("ticket did not preserve transport metadata")
 	}
 }

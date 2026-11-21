@@ -87,14 +87,6 @@ A three-step interactive wizard:
 2. **Credential mint** - Connects once to your jailbroken device over SSH and extracts the reusable account credential, cached under `~/.ipadecrypt/credentials/`. If an Apple Arcade app from the account is installed, it also mints the account's Arcade credential; without one that step is skipped, and you can add it later by installing an Arcade app and re-running with `--remint`.
 3. **On-device fallback check** - Verifies the device is ready to decrypt apps the offline decryptor can't handle (AppSync Unified + `appinst` present, helper uploads and execs). Best-effort: a missing prerequisite only disables that fallback and is reported, not fatal.
 
-Bootstrap also attempts TestFlight authentication with the saved Apple
-credentials. If Apple requires another verification code, that optional step
-is skipped. Add or refresh it later without repeating the other bootstrap work:
-
-```sh
-ipadecrypt bootstrap testflight
-```
-
 Run it again anytime; it skips minting if a credential is already cached (pass
 `--remint` to force). After bootstrap, decrypting is fully offline - the device
 is only needed again for the on-device fallback.
@@ -121,42 +113,18 @@ decrypting it on the device. Useful flags:
 ipadecrypt versions <bundle-id|app-store-id|app-store-url>
 ```
 
-### TestFlight apps and versions
+### TestFlight
 
-Use the Apple Account configured by `ipadecrypt bootstrap`:
+Uses the Apple Account from bootstrap. Run `bootstrap testflight` if additional
+verification is needed; saved sessions renew automatically.
 
 ```sh
+ipadecrypt bootstrap testflight
 ipadecrypt testflight apps
-```
-
-Preview a public TestFlight invitation without accepting it, or explicitly
-accept it with `--accept`:
-
-```sh
-ipadecrypt testflight link <link-or-code>
-ipadecrypt testflight link <link-or-code> --accept
-```
-
-If a saved session is missing or expired, ipadecrypt signs in with the saved
-Apple credentials, validates the session, and retries. Apple may request a
-verification code from a trusted device. TestFlight does not need to be
-installed or signed in on the phone. The apps shown depend on the invitations
-accepted by that Apple Account. Use `bootstrap testflight` for an explicit
-refresh.
-
-List the versions for an app, then decrypt the newest version or choose one by
-its normal version string:
-
-```sh
 ipadecrypt testflight versions <app-id>
-ipadecrypt testflight decrypt <app-id>
-ipadecrypt testflight decrypt <app-id> --version 1.0.0
+ipadecrypt testflight link <link-or-code> [--accept]
+ipadecrypt testflight decrypt <app-id> [--version <version>]
 ```
-
-Build IDs and build numbers are internal and are not part of the command-line
-workflow. If TestFlight has multiple active uploads for the same version,
-ipadecrypt chooses the newest upload. Setup saves a download identity, using
-the configured device UDID when available or generating one locally.
 
 ## Known issues
 

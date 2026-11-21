@@ -21,16 +21,15 @@ import (
 const (
 	apiOrigin   = "https://testflight.apple.com"
 	maxResponse = 10 << 20
-	// Apple uses the model in both the agent and headers to select the package
-	// transport. An unknown model produces unusable dpInfo. This compatibility
-	// profile does not describe the user's physical device.
-	// Invitation endpoints also require TestFlight's Oasis product identifier.
-	testFlightDeviceModel = "iPhone12,1"
-	testFlightUA          = "Oasis/4.4.1 iOS/18.0 model/" + testFlightDeviceModel
+	// Virtual iPhone Duo profile, independent of the credential-minting device.
+	testFlightDeviceModel = "iPhone19,4"
+	testFlightUA          = "Oasis/4.4.1 iOS/27.2.1 model/" + testFlightDeviceModel
 )
 
-// TestFlight's request digest uses a fixed protocol suffix.
-const sessionDigestSuffix = "LWzxL71nAUJTbK9X54DDQU5KC6oTcBFuibEJXIZglPRkhCSmh68PREebiNDZXctOKXpIcOfbnndI2FjMveKfRYOLPfYFRTgua1vg"
+// Client constant appended to sessionID + requestID + DSID before SHA-1.
+// Verified against TFAuthSessionInfo in TestFlightServices 4.4.1.
+// Recheck it and the native-format test when updating the TestFlight client version.
+const requestDigestSuffix = "LWzxL71nAUJTbK9X54DDQU5KC6oTcBFuibEJXIZglPRkhCSmh68PREebiNDZXctOKXpIcOfbnndI2FjMveKfRYOLPfYFRTgua1vg"
 
 var ErrSessionExpired = errors.New("TestFlight session expired")
 
@@ -112,7 +111,7 @@ func (c *Client) send(ctx context.Context, method, path string, payload any, out
 	request.Header.Set("X-Apple-Store-Front", c.storefront)
 	request.Header.Set("X-Request-Id", requestID)
 	request.Header.Set("X-Session-Id", c.session.SessionID)
-	request.Header.Set("X-Session-Digest", sessionDigest(c.session.SessionID, requestID, c.dsid, sessionDigestSuffix))
+	request.Header.Set("X-Session-Digest", sessionDigest(c.session.SessionID, requestID, c.dsid, requestDigestSuffix))
 
 	proof, err := c.store.TestFlightAMDHeaders(ctx, endpoint)
 	if err != nil {

@@ -18,6 +18,17 @@ func TestSessionDigest(t *testing.T) {
 	}
 }
 
+func TestSessionDigestMatchesNativeFormat(t *testing.T) {
+	// Calculated independently from TestFlightServices 4.4.1's NSString format
+	// with synthetic identifiers, rather than from the Go implementation.
+	got := sessionDigest("example-session", "00000000-0000-4000-8000-000000000001", "12345", requestDigestSuffix)
+
+	const want = "87432f2cecb8a6c1abba83c6e5b17e3e55a6deee"
+	if got != want {
+		t.Fatalf("sessionDigest() = %q, want %q", got, want)
+	}
+}
+
 func TestSendRequiresSession(t *testing.T) {
 	client := Client{}
 	if err := client.send(t.Context(), http.MethodGet, "/v4/accounts/example/apps", nil, nil); !errors.Is(err, ErrSessionExpired) {

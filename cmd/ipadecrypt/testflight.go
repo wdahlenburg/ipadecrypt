@@ -176,7 +176,7 @@ func testFlightDecryptHandler(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	store, client, apps, err := openTestFlight(cmd.Context(), cfg, paths)
+	_, client, apps, err := openTestFlight(cmd.Context(), cfg, paths)
 	if err != nil {
 		tui.Err("connect to TestFlight: %v", err)
 		return
@@ -231,7 +231,7 @@ func testFlightDecryptHandler(cmd *cobra.Command, args []string) {
 
 		live.Spin("downloading TestFlight IPA")
 
-		_, err = store.CompleteDownload(cfg.Apple.Account(), ticket, encryptedPath, func(current, total int64) {
+		err = client.CompleteDownload(cmd.Context(), cfg.Apple.Account(), ticket, encryptedPath, func(current, total int64) {
 			live.Message("%s", transferProgressText("downloading TestFlight IPA", current, total))
 			live.Progress(current, total)
 		})
